@@ -5,6 +5,26 @@ from threading import Thread
 import time
 
 
+def to_fragments(data, fragment_size):
+    fragments = []
+    for i in range(0, len(data)//fragment_size):
+        if ((i+1)*fragment_size % fragment_size):
+            fragments.append(data[i*fragment_size:(i+1)*fragment_size])
+        else:
+            fragments.append(data[i*fragment_size:])
+
+    return fragments
+
+
+class Packet:
+    def __init__(self, packet: bytes) -> None:
+        self.flag = packet[0]
+        self.id = packet[1]
+        self.fragment_size = packet[2:4]
+        self.fragment_number = packet[4:7]
+        self.payload = packet[7:-4]
+
+
 ##### CLIENT #####
 
 
@@ -24,22 +44,25 @@ def handle_inputs():
     fragment_size = input("Provide fragment size(def. 1461): ")
 
     while fragment_size <= 0 or fragment_size > 1461:
-        print('Size of fragment has to be from interval 0 < x  < 1461')
+        print('Size of fragment has to be from interval 0 < x  <= 1461')
         fragment_size = input("Provide fragment size(def. 1461): ")
 
-    return sending_method, fragment_size
+    # sending message
+    if sending_method == 1:
+        print('Your message:\n')
+        message = input()
+        data = bytes(message)
+        fragments = to_fragments(data, fragment_size)
+    # sending file
+    elif sending_method == 2:
+        print('File path:\n')
+        file_path = input()
+        file = open(file_path, 'rb')
+        file_data = file.read()
+        file.close()
+        fragments = [bytes(file_path), *to_fragments(file_data)]
 
-
-class Packet:
-    def __init__(self, packet: bytes) -> None:
-        self.flag = packet[0]
-        self.id = packet[1]
-        self.fragment_size = packet[2:4]
-        self.fragment_number= packet[4:7]
-        self.payload = packet[7:-4]
-        self.crc = packet[-4:]
-
-    
+    return fragments
 
 
 class Client:
@@ -57,17 +80,18 @@ class Client:
 
         # [i] Initializing connection with server
         print('[i] Initializing connection with server...')
-        self.send_message('SYN')
+        self.send_data(b'SYN')
         data = self.receive()
         if (data == 'SYN ACK'):
             print('[i] Connection established')
             keep_alive_thread.run()
 
-        sending_method, fragment_size = handle_inputs()
-
         while data != "Server closing connection":
-            print("Input your message: ")
-            self.send_message(input())
+            fragments = handle_inputs()
+
+            for fragment in fragments:
+                self.send_data(fragment)
+
             data = self.receive()
             print(data)
 
@@ -77,7 +101,7 @@ class Client:
         self.sock.settimeout(30.0)
         try:
             while True:
-                self.send_message('Keep Alive')
+                self.send_data(b'Keep Alive')
                 time.sleep(5)
         except TimeoutError:
             self.quit()
@@ -87,9 +111,8 @@ class Client:
         data, self.server = self.sock.recvfrom(1500)
         return str(data, encoding="utf-8")
 
-    def send_message(self, message):
-        self.sock.sendto(bytes(message, encoding="utf-8"),
-                         (self.server_ip, self.server_port))
+    def send_data(self, data):
+        self.sock.sendto(data, (self.server_ip, self.server_port))
 
     def quit(self):
         self.sock.close()  # correctly closing socket
@@ -109,7 +132,7 @@ class Server:
         print('[i] Server is up and listening... (IP: {} )'.format(
             ':'.join([self.server_ip, str(self.server_port)])))
         data = "empty"
-        self.sock.settimeout(30.0)
+        self.sock.settimeout(60.0)
         try:
             while True:
                 print('data: {} typeof: {}'.format(data, type(data)))
@@ -137,7 +160,7 @@ class Server:
 
         while data == None:
             data, self.client = self.sock.recvfrom(1500)
-            print("Received message: %s" % str(data, encoding="utf-8"))
+            print("Received message: %s" % data)
             return str(data, encoding='utf-8')
 
         return str(data)
