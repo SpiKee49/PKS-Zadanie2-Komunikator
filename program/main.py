@@ -1,14 +1,15 @@
 
 import socket
 import sys
+import math
 from threading import Thread
 import time
 
 
 def to_fragments(data, fragment_size):
     fragments = []
-    for i in range(0, len(data)//fragment_size):
-        if ((i+1)*fragment_size % fragment_size):
+    for i in range(0, math.ceil(len(data)/fragment_size)):
+        if (((i+1)*fragment_size % fragment_size) == 0):
             fragments.append(data[i*fragment_size:(i+1)*fragment_size])
         else:
             fragments.append(data[i*fragment_size:])
@@ -30,6 +31,7 @@ class Packet:
 
 def handle_inputs():
     sending_method = ''
+    fragments = []
     while True:
         print("[x] Select option for sending")
         print("[1] Sending Message")
@@ -42,25 +44,30 @@ def handle_inputs():
             continue
 
     fragment_size = input("Provide fragment size(def. 1461): ")
-
-    while fragment_size <= 0 or fragment_size > 1461:
+    if fragment_size == '':
+        fragment_size = 1461
+    else:
+        fragment_size = int(fragment_size)
+    while int(fragment_size) <= 0 or int(fragment_size) > 1461:
         print('Size of fragment has to be from interval 0 < x  <= 1461')
         fragment_size = input("Provide fragment size(def. 1461): ")
 
     # sending message
-    if sending_method == 1:
+    if sending_method == "1":
         print('Your message:\n')
         message = input()
-        data = bytes(message)
+        data = bytes(message, encoding='utf-8')
         fragments = to_fragments(data, fragment_size)
     # sending file
-    elif sending_method == 2:
+    elif sending_method == "2":
         print('File path:\n')
         file_path = input()
         file = open(file_path, 'rb')
         file_data = file.read()
         file.close()
-        fragments = [bytes(file_path), *to_fragments(file_data)]
+        # TODO: separate fragments for path and file
+        fragments = [*to_fragments(file_path, fragment_size),
+                     *to_fragments(file_data, fragment_size)]
 
     return fragments
 
@@ -76,15 +83,15 @@ class Client:
 
     def clientUp(self):
         data = None
-        keep_alive_thread = Thread(target=self.keep_alive).start()
-
+        # self.sock.settimeout(30.0)
+        # keep_alive_thread = Thread(target=self.keep_alive).start()
         # [i] Initializing connection with server
         print('[i] Initializing connection with server...')
         self.send_data(b'SYN')
         data = self.receive()
         if (data == 'SYN ACK'):
             print('[i] Connection established')
-            keep_alive_thread.run()
+            # keep_alive_thread.run()
 
         while data != "Server closing connection":
             fragments = handle_inputs()
@@ -98,7 +105,6 @@ class Client:
         self.quit()
 
     def keep_alive(self):
-        self.sock.settimeout(30.0)
         try:
             while True:
                 self.send_data(b'Keep Alive')
@@ -132,10 +138,9 @@ class Server:
         print('[i] Server is up and listening... (IP: {} )'.format(
             ':'.join([self.server_ip, str(self.server_port)])))
         data = "empty"
-        self.sock.settimeout(60.0)
+        # self.sock.settimeout(60.0)
         try:
             while True:
-                print('data: {} typeof: {}'.format(data, type(data)))
                 if data == "End":
                     break
                 if data == "SYN":
