@@ -6,6 +6,7 @@ from threading import Thread
 import time
 from enum import Enum
 import zlib
+import random
 
 
 def to_fragments(data, fragment_size):
@@ -39,6 +40,7 @@ class Flag(Enum):
 
 class Packet:
     def __init__(self, packet) -> None:
+        self.packet_without_crc = packet[:-4]
         self.flag = packet[0]
         self.fragment_size = packet[1:3]
         self.fragment_number = packet[3:6]
@@ -105,7 +107,7 @@ class Client:
         data = None
         # [i] Initializing connection with server
         print('[i] Initializing connection with server...')
-        self.send_data(Flag.SYN)
+        self.send_data(Flag.SYN.value)
         data, self.server = self.sock.recvfrom(1500)
         packet = Packet(data)
         if (packet.flag == Flag.SYN.value):
@@ -116,38 +118,40 @@ class Client:
             for i in range(0, len(fragments)):
                 # sending packets 0 => n  but to server in order n => 0 so we know the last packet
                 print("sent no. {} with: {}".format(i, fragments[i]))
-                self.send_data(flag=Flag.FRAGMENT, fragment_size=len(fragments[i]), fragment_number=(
-                    len(fragments)-1-i), data=fragments[i])
+                if i < len(fragments)-1:
+                    self.send_data(flag=Flag.FRAGMENT.value, fragment_size=len(
+                        fragments[i]), fragment_number=i, data=fragments[i], can_break=True)
+                else:
+                    self.send_data(flag=Flag.FINAL_FRAG.value, fragment_size=len(
+                        fragments[i]), fragment_number=i, data=fragments[i], can_break=True)
 
-                # # sent 5 packets, now check if they were correctly recieved
-                # if i > 0 and i % 4 == 0 or len(fragments)-1 == i:
-                #     correct_packets = []
-                #     while True:
-                #         data, self.server = self.sock.recvfrom(1500)
-                #         packet = Packet(data)
-                #         if (packet.flag == Flag.CORRECT.value):
-                #             correct_packets.append(packet.fragment_number)
-                #             print('[i] Packet no.{} send successfully'.format(
-                #                 packet_index))
-                #         elif packet.flag == Flag.INCORRECT.value:
-                #             packet_index = len(fragments) - \
-                #                 1 - packet.fragment_number
-                #             print('[i] Sending packet no.{} again'.format(
-                #                 packet_index))
-                #             self.send_data(flag=Flag.FRAGMENT, fragment_size=fragment_size,
-                #                            fragment_number=packet_index, data=fragments[packet_index])
-                #             continue
+                # sent 5 packets, now check if they were correctly recieved
+                if i > 0 and i % 4 == 0 or len(fragments)-1 == i:
+                    packets_to_check = fragment_size
+                    correct_packets = []
+                    while True:
+                        data, self.server = self.sock.recvfrom(1500)
+                        packet = Packet(data)
+                        if (packet.flag == Flag.CORRECT.value):
+                            correct_packets.append(packet.fragment_number)
+                            print('[i] Packet no.{} send successfully'.format(
+                                packet.fragment_number))
+                        elif packet.flag == Flag.INCORRECT.value:
+                            wrong_packet_no = int.from_bytes(
+                                packet.fragment_number)
+                            print('[i] Sending packet no.{} again'.format(
+                                wrong_packet_no))
+                            self.send_data(flag=packet.flag, fragment_size=packet.fragment_size,
+                                           fragment_number=packet.fragment_number, data=fragments[int.from_bytes(packet.fragment_number)])
+                            continue
 
-                #         if (len(correct_packets) == 5):
-                #             print(
-                #                 '[i] 5 packets send correctly, sending next 5...')
-                #             break
-
-            data, self.server = self.sock.recvfrom(1500)
-            packet = Packet(data)
-            if (packet.flag == Flag.FIN.value):
-                self.send_data(flag.FIN)
-                break
+                        if (len(correct_packets) == 5):
+                            print(
+                                '[i] 5 packets send correctly, sending next 5...')
+                            break
+                        elif len(fragments)-1 == i and (len(correct_packets) == len(fragments) % 5):
+                            print('[i] All packets send correctly')
+                            break
 
         self.quit()
 
@@ -159,11 +163,21 @@ class Client:
 
         self.quit()
 
-    def send_data(self, flag, fragment_size=0, fragment_number=0, data=b''):
-        header_with_data = bytes([flag.value, *fragment_size.to_bytes(2),
-                                  *fragment_number.to_bytes(3), *data])
+    def send_data(self, flag, fragment_size=0, fragment_number=0, data=b'', can_break=False):
+        if type(fragment_size) == bytes:
+            header_with_data = bytes([flag, *fragment_size,
+                                      *fragment_number, *data])
+        else:
+            header_with_data = bytes([flag, *fragment_size.to_bytes(2),
+                                      *fragment_number.to_bytes(3), *data])
+
+        crc_value = zlib.crc32(header_with_data)
+
+        if fragment_number == 0 or random.random() < .5 and can_break:
+            crc_value += 1
+
         packet = bytes(
-            [*header_with_data, *zlib.crc32(header_with_data).to_bytes(4)])
+            [*header_with_data, *crc_value.to_bytes(4)])
         self.sock.sendto(packet, (self.server_ip, self.server_port))
 
     def quit(self):
@@ -188,42 +202,68 @@ class Server:
         try:
             while True:
                 packet, self.client = recieve_packet(self.sock)
-                print("F: {} S: {} N: {} P: {}".format(packet.flag, packet.fragment_size,
-                                                       int.from_bytes(packet.fragment_number), packet.payload))
-                if packet == "End":
+                # print("F: {} S: {} N: {} P: {}".format(packet.flag, packet.fragment_size,
+                #                                        int.from_bytes(packet.fragment_number), packet.payload))
+                if packet.flag == Flag.FIN.value:
                     break
 
                 if packet.flag == Flag.SYN.value:
-                    self.send_response(Flag.SYN)
+                    self.send_message(Flag.SYN)
 
                 if packet.flag == Flag.KEEP_ALIVE.value:
-                    self.send_response(Flag.KEEP_ALIVE)
+                    self.send_message(Flag.KEEP_ALIVE)
 
                 # first fragment
                 if packet.flag == Flag.FRAGMENT.value:
-
-                    self.send_response(Flag.CORRECT)
-
+                    packets = []
+                    self.validate_packet(packets, packet)
                     # recieve all packets
+                    self.sock.settimeout(1)
                     while packet.flag != Flag.FINAL_FRAG.value:
                         try:
                             data, self.client = self.sock.recvfrom(1500)
                             packet = Packet(data)
+                            print(int.from_bytes(packet.fragment_number))
+                            self.validate_packet(packets, packet)
+                            print(packets)
                         except TimeoutError:
-                            self.send_response(Flag.INCORRECT,)
+                            # if len(packets) > 0:
+                            #     self.send_message(
+                            #         Flag.INCORRECT, packet.fragment_size, packets[-1].fragment_number + int(1).to_bytes(1))
+                            # else:
+                            #     self.send_message(
+                            #         Flag.INCORRECT, packet.fragment_size, 0)
                             continue
 
-            self.send_response(Flag.FIN)
+                    self.sock.settimeout(60.0)
+                    print('Recieved message: {}'.format(
+                        ''.join(list(map(lambda packet: str(packet.payload, encoding='utf-8'), packets)))))
+
+            self.send_message(Flag.FIN)
             self.quit()
 
         except TimeoutError:
             print('[i] Server timeout...')
             self.quit()
 
-    def send_response(self, flag, fragment_size=0, fragment_number=0, data=b''):
-        packet = bytes([flag.value, *fragment_size.to_bytes(2),
-                       *fragment_number.to_bytes(3), *data])
+    def send_message(self, flag, fragment_size=0, fragment_number=0, data=b''):
+        packet = ''
+        if type(fragment_size) == bytes:
+            packet = bytes([flag.value, *fragment_size,
+                            *fragment_number, *data])
+        else:
+            packet = bytes([flag.value, *fragment_size.to_bytes(2),
+                            *fragment_number.to_bytes(3), *data])
+
         self.sock.sendto(packet, self.client)
+
+    def validate_packet(self, packets, packet):
+        if int.from_bytes(packet.crc) == zlib.crc32(packet.packet_without_crc):
+            self.send_message(Flag.CORRECT)
+            packets.append(packet)
+        else:
+            self.send_message(
+                Flag.INCORRECT, packet.fragment_size, packet.fragment_size)
 
     def quit(self):
         self.sock.close()  # correctly closing socket
