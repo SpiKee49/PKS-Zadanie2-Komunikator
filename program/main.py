@@ -4,6 +4,8 @@ import sys
 import math
 from threading import Thread
 import time
+import signal
+import sys
 from enum import Enum
 import zlib
 import random
@@ -59,6 +61,7 @@ def handle_inputs():
         print("[x] Select option for sending")
         print("[1] Sending Message")
         print("[2] Sending File")
+        print("[<] Sending File")
         sending_method = input()
         if sending_method in ["1", "2"]:
             break
@@ -104,6 +107,10 @@ class Client:
         self.server_ip = server_ip
         self.server_port = server_port
         self.sock.settimeout(20)
+        self.keep_alive_retries = 0
+        self.keep_alive_on = True
+        self.not_terminated = True
+        self.keep_alive_thread = Thread(target=self.keep_alive)
         print('[i] Client created... (IP: {} )'.format(
             ':'.join([server_ip, str(server_port)])))
 
@@ -117,8 +124,13 @@ class Client:
         if (packet.flag == SYN):
             print('[i] Connection established')
 
+        signal.signal(signal.SIGINT, self.signal_handler)
+        self.keep_alive_thread.start()
+
         while True:
+            self.keep_alive_on = True
             fragment_size, fragments, sending_method = handle_inputs()
+            self.keep_alive_on = False
 
             if sending_method == "1":  # sending message
                 self.sending_cycle(
@@ -131,16 +143,31 @@ class Client:
 
         self.quit()
 
+    def signal_handler(sig, frame):
+        self.not_terminated = False
+        sys.exit(0)
+
     def keep_alive(self):
-
-        while True:
-            self.send_data(KEEP_ALIVE)
-            time.sleep(5)
-
-        self.quit()
+        self.sock.settimeout(5)
+        while self.not_terminated:
+            while self.keep_alive_on:
+                try:
+                    self.send_data(KEEP_ALIVE)
+                    data, self.server = self.sock.recvfrom(1500)
+                    response = Packet(data)
+                    self.keep_alive_retries = 0
+                    time.sleep(5)
+                except TimeoutError:
+                    if (self.keep_alive_retries == 5):
+                        self.keep_alive_on = False
+                        self.keep_alive_thread.join()
+                        print('Keep alive not received 5 times, closing connection')
+                        self.quit()
+                        return
+                    self.keep_alive_retries += 1
+                    time.sleep(5)
 
     def sending_cycle(self, body_flag, final_flag, fragments):
-
         for i in range(0, len(fragments)):
             print("sent no. {} with: {}".format(i, fragments[i]))
             if i < len(fragments)-1:
@@ -152,20 +179,29 @@ class Client:
 
             # wait for ACK
             while True:
-                data, self.server = self.sock.recvfrom(1500)
-                response = Packet(data)
-                print('Packet flag: {}  {}'.format(
-                    response.flag, CORRECT))
-                # if valid, dont send again
-                if response.flag == CORRECT:
-                    break
+                try:
+                    data, self.server = self.sock.recvfrom(1500)
+                    response = Packet(data)
+                    print('Packet flag: {}  {}'.format(
+                        response.flag, CORRECT))
+                    # if valid, dont send again
+                    if response.flag == CORRECT:
+                        break
 
-                flag = body_flag if int.from_bytes(
-                    response.fragment_number) < len(fragments)-1 else final_flag
-                print('Sending again no.{}'.format(
-                    int.from_bytes(response.fragment_number)))
-                self.send_data(flag, fragment_size=len(
-                    fragments[i]), fragment_number=i, data=fragments[i])
+                    flag = body_flag if int.from_bytes(
+                        response.fragment_number) < len(fragments)-1 else final_flag
+                    print('Sending again no.{}'.format(
+                        int.from_bytes(response.fragment_number)))
+                    self.send_data(flag, fragment_size=len(
+                        fragments[i]), fragment_number=i, data=fragments[i])
+                except TimeoutError:
+                    if (self.keep_alive_retries == 5):
+                        self.keep_alive_on = False
+                        self.keep_alive_thread.join()
+                        print('Keep alive not received 5 times, closing connection')
+                        self.quit()
+                        return
+                    self.keep_alive_retries += 1
 
     def send_data(self, flag, fragment_size=0, fragment_number=0, data=b'', can_break=False):
         if type(fragment_size) == bytes:
@@ -212,8 +248,7 @@ class Server:
         try:
             while True:
                 packet, self.client = recieve_packet(self.sock)
-                # print("F: {} S: {} N: {} P: {}".format(packet.flag, packet.fragment_size,
-                #                                        int.from_bytes(packet.fragment_number), packet.payload))
+
                 if packet.flag == FIN:
                     break
 
@@ -221,6 +256,7 @@ class Server:
                     self.send_message(SYN)
 
                 if packet.flag == KEEP_ALIVE:
+                    print("keep alive recieved")
                     self.send_message(KEEP_ALIVE)
 
                 ############# MESSAGE TRANSFER #########################
@@ -303,7 +339,7 @@ class Server:
 
     def quit(self):
         self.sock.close()  # correctly closing socket
-        print("Server closed..")
+        print("Server closed...")
 
 
 if __name__ == "__main__":
