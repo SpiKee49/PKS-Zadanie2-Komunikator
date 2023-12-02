@@ -24,6 +24,11 @@ KEEP_ALIVE = 10
 ROLE_SWITCH = 11
 FINAL_FILE_NAME_FRAGMENT = 12
 
+CONNECTION_ERROR = 'Connection error'
+SWITCH = 'Switch roles'
+CLOSE_CONNECTION = 'Close connection'
+SWITCH = 'Switch roles'
+
 
 def to_fragments(data, fragment_size):
     fragments = []
@@ -56,20 +61,22 @@ class Packet:
 
 def handle_inputs():
     sending_method = ''
+    fragment_size = ''
     fragments = []
     while True:
         print("[x] Select option for sending")
         print("[1] Sending Message")
         print("[2] Sending File")
-        print("[<] Sending File")
+        print("[3] Switch roles")
         sending_method = input()
-        if sending_method in ["1", "2"]:
+        if sending_method in ["1", "2", "3", "4"]:
             break
         else:
             print('[i] Invalid method selected!')
             continue
 
-    fragment_size = input("Provide fragment size(def. 1461): ")
+    if sending_method in ["1", "2"]:
+        fragment_size = input("Provide fragment size(def. 1461): ")
     if fragment_size == '':
         fragment_size = 1461
     else:
@@ -95,7 +102,6 @@ def handle_inputs():
         fragments = {}
         fragments['path'] = to_fragments(file_name, fragment_size)
         fragments['file'] = to_fragments(file_data, fragment_size)
-        print(fragments)
 
     return fragment_size, fragments, sending_method
 
@@ -106,7 +112,8 @@ class Client:
             socket.AF_INET, socket.SOCK_DGRAM)  # UDP socket creation
         self.server_ip = server_ip
         self.server_port = server_port
-        self.sock.settimeout(20)
+        self.sock.settimeout(5)
+        self.connection_retries = 0
         self.keep_alive_retries = 0
         self.keep_alive_on = True
         self.not_terminated = True
@@ -118,13 +125,21 @@ class Client:
         data = None
         # [i] Initializing connection with server
         print('[i] Initializing connection with server...')
-        self.send_data(SYN)
-        data, self.server = self.sock.recvfrom(1500)
-        packet = Packet(data)
-        if (packet.flag == SYN):
-            print('[i] Connection established')
 
-        signal.signal(signal.SIGINT, self.signal_handler)
+        connection_established = False
+        while not connection_established:
+            try:
+                self.send_data(SYN)
+                data, self.server = self.sock.recvfrom(1500)
+                packet = Packet(data)
+                self.connection_retries = 0
+                if (packet.flag == SYN):
+                    print('[i] Connection established')
+                    connection_established = True
+            except TimeoutError:
+                if self.connection_retries == 10:
+                    return "connection not established after 50s"
+
         self.keep_alive_thread.start()
 
         while True:
@@ -133,19 +148,45 @@ class Client:
             self.keep_alive_on = False
 
             if sending_method == "1":  # sending message
-                self.sending_cycle(
+                value = self.sending_cycle(
                     MESSAGE_FRAGMENT, FINAL_MESSAGE_FRAGMENT, fragments)
+                if value == CLOSE_CONNECTION:
+                    return CLOSE_CONNECTION
+
             elif sending_method == "2":  # sending file
-                self.sending_cycle(FILE_NAME_FRAGMENT,
-                                   FINAL_FILE_NAME_FRAGMENT, fragments['path'])
-                self.sending_cycle(FILE_FRAGMENT,
-                                   FINAL_FILE_FRAGMENT, fragments['file'])
+                value1 = self.sending_cycle(FILE_NAME_FRAGMENT,
+                                            FINAL_FILE_NAME_FRAGMENT, fragments['path'])
 
-        self.quit()
+                value2 = self.sending_cycle(FILE_FRAGMENT,
+                                            FINAL_FILE_FRAGMENT, fragments['file'])
 
-    def signal_handler(sig, frame):
-        self.not_terminated = False
-        sys.exit(0)
+                if value1 == CLOSE_CONNECTION or value2 == CLOSE_CONNECTION:
+                    return CLOSE_CONNECTION
+
+            elif sending_method == "3":  # switching role
+                self.send_data(flag=ROLE_SWITCH)
+                # wait for ACK
+                while True:
+                    try:
+                        data, self.server = self.sock.recvfrom(1500)
+                        response = Packet(data)
+                        self.keep_alive_retries = 0
+                        print('Packet flag: {}  {}'.format(
+                            response.flag, CORRECT))
+                        return SWITCH
+                    except TimeoutError:
+                        if (self.keep_alive_retries == 10):
+                            self.keep_alive_on = False
+                            self.keep_alive_thread.join()
+                            print(
+                                'Response not received 10 times, closing connection')
+                            return CLOSE_CONNECTION
+                        self.keep_alive_retries += 1
+                        time.sleep(5)
+
+            elif sending_method == "4":
+                self.send_data(flag=FIN)
+                return 'End'
 
     def keep_alive(self):
         self.sock.settimeout(5)
@@ -182,6 +223,7 @@ class Client:
                 try:
                     data, self.server = self.sock.recvfrom(1500)
                     response = Packet(data)
+                    self.keep_alive_retries = 0
                     print('Packet flag: {}  {}'.format(
                         response.flag, CORRECT))
                     # if valid, dont send again
@@ -200,8 +242,9 @@ class Client:
                         self.keep_alive_thread.join()
                         print('Keep alive not received 5 times, closing connection')
                         self.quit()
-                        return
+                        return CLOSE_CONNECTION
                     self.keep_alive_retries += 1
+                    tiem.sleep(5)
 
     def send_data(self, flag, fragment_size=0, fragment_number=0, data=b'', can_break=False):
         if type(fragment_size) == bytes:
@@ -221,6 +264,7 @@ class Client:
         self.sock.sendto(packet, (self.server_ip, self.server_port))
 
     def quit(self):
+        self.not_terminated = False
         self.sock.close()  # correctly closing socket
         print("[i] Client closed..")
 
@@ -249,8 +293,12 @@ class Server:
             while True:
                 packet, self.client = recieve_packet(self.sock)
 
+                if packet.flag == ROLE_SWITCH:
+                    self.send_message(CORRECT)
+                    return SWITCH
+
                 if packet.flag == FIN:
-                    break
+                    return 'End'
 
                 if packet.flag == SYN:
                     self.send_message(SYN)
@@ -302,12 +350,9 @@ class Server:
                         filename_packets = []
                         file_packets = []
 
-            self.send_message(FIN)
-            self.quit()
-
         except TimeoutError:
             print('[i] Server timeout...')
-            self.quit()
+            return 'End'
 
     def check_crc(self, correct_packets, packet):
         if packet.crc == zlib.crc32(packet.packet_without_crc).to_bytes(4):
@@ -345,6 +390,10 @@ class Server:
 if __name__ == "__main__":
 
     device_type = ''
+    server_ip = ''
+    server_port = ''
+    returned_state = ''
+
     # Landing menu, device choice
     while (True):
         print('Choose device')
@@ -356,19 +405,30 @@ if __name__ == "__main__":
             print('Invalid device type use "client" or "server".')
             continue
 
-    # Get server informations since it's same for server and client
-    server_ip = input("Server IP (def: 127.0.0.1):")
-    server_port = input("Server port (def: 50601):")
+    while returned_state != 'End':
+        # Get server informations since it's same for server and client
+        if (returned_state == '' or returned_state == CONNECTION_ERROR):
+            server_ip = input("Server IP (def: 127.0.0.1):")
+            server_port = input("Server port (def: 50601):")
 
-    if (server_ip == ''):
-        server_ip = "127.0.0.1"
+            if (server_ip == ''):
+                server_ip = "127.0.0.1"
 
-    if (server_port == ''):
-        server_port = "50601"
-    # Initialize, what device are we using
-    if (device_type == 'server'):
-        server = Server(server_ip, int(server_port))
-        server.serverUp()
-    else:
-        client = Client(server_ip, int(server_port))
-        client.clientUp()
+            if (server_port == ''):
+                server_port = "50601"
+        # Initialize, what device are we using
+
+        if returned_state == SWITCH:
+            if device_type == 'server':
+                device_type = 'client'
+            else:
+                device_type = 'server'
+
+        if device_type == 'server':
+            server = Server(server_ip, int(server_port))
+            returned_state = server.serverUp()
+            server.quit()
+        else:
+            client = Client(server_ip, int(server_port))
+            returned_state = client.clientUp()
+            client.quit()
