@@ -27,7 +27,6 @@ FINAL_FILE_NAME_FRAGMENT = 12
 CONNECTION_ERROR = 'Connection error'
 SWITCH = 'Switch roles'
 CLOSE_CONNECTION = 'Close connection'
-SWITCH = 'Switch roles'
 
 
 def to_fragments(data, fragment_size):
@@ -68,6 +67,7 @@ def handle_inputs():
         print("[1] Sending Message")
         print("[2] Sending File")
         print("[3] Switch roles")
+        print("[4] Exit application")
         sending_method = input()
         if sending_method in ["1", "2", "3", "4"]:
             break
@@ -93,12 +93,18 @@ def handle_inputs():
         fragments = to_fragments(data, fragment_size)
     # sending file
     elif sending_method == "2":
-        print('File path:')
-        file_path = input()
-        file = open(file_path, 'rb')
+        while True:
+            try:
+                print('File path:')
+                file_path = input()
+                file = open(file_path, 'rb')
+                break
+            except FileNotFoundError:
+                print("[i] File not found, try again")
+                continue
         file_data = file.read()
         file.close()
-        file_name = bytes(file_path, encoding='utf-8')
+        file_name = bytes(file_path.split('/')[-1], encoding='utf-8')
         fragments = {}
         fragments['path'] = to_fragments(file_name, fragment_size)
         fragments['file'] = to_fragments(file_data, fragment_size)
@@ -136,9 +142,11 @@ class Client:
                 if (packet.flag == SYN):
                     print('[i] Connection established')
                     connection_established = True
-            except TimeoutError:
+            except (TimeoutError, ConnectionResetError) as e:
                 if self.connection_retries == 10:
-                    return "connection not established after 50s"
+                    return CONNECTION_ERROR
+                self.connection_retries += 1
+                time.sleep(5)
 
         self.keep_alive_thread.start()
 
@@ -177,6 +185,7 @@ class Client:
                     except TimeoutError:
                         if (self.keep_alive_retries == 10):
                             self.keep_alive_on = False
+                            self.not_terminated = False
                             self.keep_alive_thread.join()
                             print(
                                 'Response not received 10 times, closing connection')
@@ -210,7 +219,6 @@ class Client:
 
     def sending_cycle(self, body_flag, final_flag, fragments):
         for i in range(0, len(fragments)):
-            print("sent no. {} with: {}".format(i, fragments[i]))
             if i < len(fragments)-1:
                 self.send_data(flag=body_flag, fragment_size=len(
                     fragments[i]), fragment_number=i, data=fragments[i], can_break=True)
@@ -224,10 +232,10 @@ class Client:
                     data, self.server = self.sock.recvfrom(1500)
                     response = Packet(data)
                     self.keep_alive_retries = 0
-                    print('Packet flag: {}  {}'.format(
-                        response.flag, CORRECT))
+
                     # if valid, dont send again
                     if response.flag == CORRECT:
+                        print(f'Packet no.{i} send successfully.')
                         break
 
                     flag = body_flag if int.from_bytes(
@@ -239,6 +247,7 @@ class Client:
                 except TimeoutError:
                     if (self.keep_alive_retries == 5):
                         self.keep_alive_on = False
+                        self.not_terminated = False
                         self.keep_alive_thread.join()
                         print('Keep alive not received 5 times, closing connection')
                         self.quit()
@@ -272,9 +281,10 @@ class Client:
 ##### SERVER #####
 class Server:
 
-    def __init__(self, ip, port) -> None:
+    def __init__(self, ip, port, save_path) -> None:
         self.server_ip = ip
         self.server_port = port
+        self.save_path = save_path
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((ip, port))
 
@@ -295,6 +305,7 @@ class Server:
 
                 if packet.flag == ROLE_SWITCH:
                     self.send_message(CORRECT)
+                    time.sleep(5)
                     return SWITCH
 
                 if packet.flag == FIN:
@@ -313,11 +324,16 @@ class Server:
 
                 if packet.flag == FINAL_MESSAGE_FRAGMENT:
                     is_valid = self.check_crc(correct_packets, packet)
-                    print('is last valid: {}'.format(is_valid))
+                    print('[i] Last packet is valid: {}'.format(is_valid))
                     if (is_valid):
 
-                        print('Recieved message: {}'.format(
+                        print('[i] Recieved message: {}'.format(
                             ''.join(list(map(lambda packet: str(packet.payload, encoding='utf-8'), correct_packets)))))
+                        print(f"[i] Total fragments received: {
+                              len(correct_packets)}")
+                        print(f"[i] Total data size received: {
+                              len(b"".join(list(map(lambda packet: packet.payload, correct_packets))))}B")
+                        correct_packets = []
 
                 ############# FILE NAME TRANSFER #########################
 
@@ -326,11 +342,11 @@ class Server:
 
                 if packet.flag == FINAL_FILE_NAME_FRAGMENT:
                     is_valid = self.check_crc(filename_packets, packet)
-                    print('is last valid: {}'.format(is_valid))
+                    print('[i] Last packet is valid: {}'.format(is_valid))
                     if (is_valid):
                         filename = ''.join(list(map(lambda packet: str(
                             packet.payload, encoding='utf-8'), filename_packets)))
-                        print('Filename: {}'.format(filename))
+                        print('[i] Filename: {}'.format(filename))
 
                 ############# FILE TRANSFER #########################
 
@@ -339,12 +355,21 @@ class Server:
 
                 if packet.flag == FINAL_FILE_FRAGMENT:
                     is_valid = self.check_crc(file_packets, packet)
-                    print('is last valid: {}'.format(is_valid))
+                    print('[i] Last packet is valid: {}'.format(is_valid))
                     if (is_valid):
-                        file = open("./received/{}".format(filename), 'wb')
-                        file.write(
-                            bytes(b"".join(list(map(lambda packet: packet.payload, file_packets)))))
+                        file = open(f"{save_path}{filename}", 'wb')
+                        file_data = bytes(
+                            b"".join(list(map(lambda packet: packet.payload, file_packets))))
+                        file.write(file_data)
                         file.close()
+                        print(f"[i] File successfully saved at {
+                              save_path}{filename}")
+                        print(f"[i] Total fragments received: {
+                              len(filename_packets) + len(file_packets)}")
+                        print(f"[i] Total data size received: {
+                              len(b"".join(list(map(lambda packet:
+                                                    packet.payload, filename_packets)))) + len(file_data)}B")
+
                         ## reset variables ##
                         filename = ""
                         filename_packets = []
@@ -364,7 +389,7 @@ class Server:
             return True
 
         else:
-            print('Packet no.{} !NOT! valid'.format(
+            print('Packet no.{} NOT valid'.format(
                 int.from_bytes(packet.fragment_number)))
             self.send_message(
                 INCORRECT, fragment_size=packet.fragment_size, fragment_number=packet.fragment_number)
@@ -425,7 +450,10 @@ if __name__ == "__main__":
                 device_type = 'server'
 
         if device_type == 'server':
-            server = Server(server_ip, int(server_port))
+            save_path = input('Path to store files(def. "."):')
+            if (save_path != '' and save_path[-1] != '/'):
+                save_path = save_path + "/"
+            server = Server(server_ip, int(server_port), save_path)
             returned_state = server.serverUp()
             server.quit()
         else:

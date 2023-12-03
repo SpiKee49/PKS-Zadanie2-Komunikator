@@ -1,13 +1,7 @@
-from enum import Enum
 
-# class syntax
-
-
-class Flag(Enum):
-    FIN = b'1'
-    SYN = 2
+path = './test/test2/main.py'
+path2 = 'main.py'
 
 
-flags = Flag.FIN.value
-
-print(flags)
+print(path.split('/')[-1])
+print(path2.split('/')[-1])
