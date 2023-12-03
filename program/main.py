@@ -155,18 +155,31 @@ class Client:
             fragment_size, fragments, sending_method = handle_inputs()
             self.keep_alive_on = False
 
-            if sending_method == "1":  # sending message
+            if sending_method == "1":
+                start_time = time.time()  # sending message
                 value = self.sending_cycle(
                     MESSAGE_FRAGMENT, FINAL_MESSAGE_FRAGMENT, fragments)
+
+                end_time = time.time()
+                print("[i] All packets send successfully")
+                print(f"[i] Sent {len(fragments)} packets with max. size {
+                      fragment_size}B ")
+                print(f"[i] Sent in {end_time - start_time} seconds")
                 if value == CLOSE_CONNECTION:
                     return CLOSE_CONNECTION
 
             elif sending_method == "2":  # sending file
+                start_time = time.time()
                 value1 = self.sending_cycle(FILE_NAME_FRAGMENT,
                                             FINAL_FILE_NAME_FRAGMENT, fragments['path'])
 
                 value2 = self.sending_cycle(FILE_FRAGMENT,
                                             FINAL_FILE_FRAGMENT, fragments['file'])
+                end_time = time.time()
+                print("[i] All packets send successfully")
+                print(f"[i] Sent {len(fragments['path']) + len(fragments['file'])
+                                  } packets with max. size {fragment_size}B ")
+                print(f"[i] Sent in {end_time - start_time} seconds")
 
                 if value1 == CLOSE_CONNECTION or value2 == CLOSE_CONNECTION:
                     return CLOSE_CONNECTION
@@ -198,7 +211,6 @@ class Client:
                 return 'End'
 
     def keep_alive(self):
-        self.sock.settimeout(5)
         while self.not_terminated:
             while self.keep_alive_on:
                 try:
@@ -207,12 +219,13 @@ class Client:
                     response = Packet(data)
                     self.keep_alive_retries = 0
                     time.sleep(5)
-                except TimeoutError:
+                except (TimeoutError, ConnectionResetError) as e:
+
                     if (self.keep_alive_retries == 5):
                         self.keep_alive_on = False
-                        self.keep_alive_thread.join()
-                        print('Keep alive not received 5 times, closing connection')
-                        self.quit()
+                        self.not_terminated = False
+                        print(
+                            '[i] Keep alive not received 5 times, closing connection')
                         return
                     self.keep_alive_retries += 1
                     time.sleep(5)
@@ -221,10 +234,10 @@ class Client:
         for i in range(0, len(fragments)):
             if i < len(fragments)-1:
                 self.send_data(flag=body_flag, fragment_size=len(
-                    fragments[i]), fragment_number=i, data=fragments[i], can_break=True)
+                    fragments[i]), fragment_number=i, data=fragments[i], can_break=False)
             else:
                 self.send_data(flag=final_flag, fragment_size=len(
-                    fragments[i]), fragment_number=i, data=fragments[i], can_break=True)
+                    fragments[i]), fragment_number=i, data=fragments[i], can_break=False)
 
             # wait for ACK
             while True:
@@ -235,7 +248,7 @@ class Client:
 
                     # if valid, dont send again
                     if response.flag == CORRECT:
-                        print(f'Packet no.{i} send successfully.')
+                        print(f'[i] Packet no.{i} send successfully.')
                         break
 
                     flag = body_flag if int.from_bytes(
@@ -249,7 +262,8 @@ class Client:
                         self.keep_alive_on = False
                         self.not_terminated = False
                         self.keep_alive_thread.join()
-                        print('Keep alive not received 5 times, closing connection')
+                        print(
+                            '[i] Keep alive not received 5 times, closing connection')
                         self.quit()
                         return CLOSE_CONNECTION
                     self.keep_alive_retries += 1
@@ -315,7 +329,7 @@ class Server:
                     self.send_message(SYN)
 
                 if packet.flag == KEEP_ALIVE:
-                    print("keep alive recieved")
+                    print("[i] Keep alive received")
                     self.send_message(KEEP_ALIVE)
 
                 ############# MESSAGE TRANSFER #########################
@@ -366,9 +380,8 @@ class Server:
                               save_path}{filename}")
                         print(f"[i] Total fragments received: {
                               len(filename_packets) + len(file_packets)}")
-                        print(f"[i] Total data size received: {
-                              len(b"".join(list(map(lambda packet:
-                                                    packet.payload, filename_packets)))) + len(file_data)}B")
+                        print(f"[i] Total data size received: {len(b"".join(
+                            list(map(lambda packet: packet.payload, filename_packets)))) + len(file_data)}B")
 
                         ## reset variables ##
                         filename = ""
@@ -381,7 +394,7 @@ class Server:
 
     def check_crc(self, correct_packets, packet):
         if packet.crc == zlib.crc32(packet.packet_without_crc).to_bytes(4):
-            print('Packet no.{} valid'.format(
+            print('[i] Packet no.{} valid'.format(
                 int.from_bytes(packet.fragment_number)))
             correct_packets.append(packet)
             self.send_message(
@@ -389,7 +402,7 @@ class Server:
             return True
 
         else:
-            print('Packet no.{} NOT valid'.format(
+            print('[i] Packet no.{} NOT valid'.format(
                 int.from_bytes(packet.fragment_number)))
             self.send_message(
                 INCORRECT, fragment_size=packet.fragment_size, fragment_number=packet.fragment_number)
@@ -409,7 +422,7 @@ class Server:
 
     def quit(self):
         self.sock.close()  # correctly closing socket
-        print("Server closed...")
+        print("[i] Server closed...")
 
 
 if __name__ == "__main__":
@@ -441,8 +454,8 @@ if __name__ == "__main__":
 
             if (server_port == ''):
                 server_port = "50601"
-        # Initialize, what device are we using
 
+        # Initialize, what device we are using
         if returned_state == SWITCH:
             if device_type == 'server':
                 device_type = 'client'
