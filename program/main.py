@@ -40,6 +40,18 @@ def to_fragments(data, fragment_size):
     return fragments
 
 
+def tuple_bytes(address):
+    values = ', '.join(str(item) for item in address)
+    tuple_string = bytes(''.join(('(', values, ')')), encoding='utf-8')
+    return tuple_string
+
+
+def bytes_tuple(data):
+    string_tuple = str(data, encoding='utf-8').replace('(',
+                                                       '').replace(')', '').replace(' ', '').split(',')
+    return string_tuple
+
+
 def recieve_packet(socket):
     data, recieved_from = socket.recvfrom(1500)
     packet = Packet(data)
@@ -124,13 +136,13 @@ class Client:
         self.keep_alive_on = True
         self.not_terminated = True
         self.keep_alive_thread = Thread(target=self.keep_alive)
-        print('[i] Client created... (IP: {} )'.format(
-            ':'.join([server_ip, str(server_port)])))
+        print('[i] Client created')
 
     def clientUp(self):
         data = None
         # [i] Initializing connection with server
-        print('[i] Initializing connection with server...')
+        print(f'[i] Initializing connection with server {
+              ':'.join([server_ip, str(server_port)])}')
 
         connection_established = False
         while not connection_established:
@@ -144,7 +156,7 @@ class Client:
                     connection_established = True
             except (TimeoutError, ConnectionResetError) as e:
                 if self.connection_retries == 10:
-                    return CONNECTION_ERROR
+                    return CONNECTION_ERROR, ''
                 self.connection_retries += 1
                 time.sleep(5)
 
@@ -166,7 +178,7 @@ class Client:
                       fragment_size}B ")
                 print(f"[i] Sent in {end_time - start_time} seconds")
                 if value == CLOSE_CONNECTION:
-                    return CLOSE_CONNECTION
+                    return CLOSE_CONNECTION, ''
 
             elif sending_method == "2":  # sending file
                 start_time = time.time()
@@ -182,7 +194,7 @@ class Client:
                 print(f"[i] Sent in {end_time - start_time} seconds")
 
                 if value1 == CLOSE_CONNECTION or value2 == CLOSE_CONNECTION:
-                    return CLOSE_CONNECTION
+                    return CLOSE_CONNECTION, ''
 
             elif sending_method == "3":  # switching role
                 self.send_data(flag=ROLE_SWITCH)
@@ -194,7 +206,8 @@ class Client:
                         self.keep_alive_retries = 0
                         print('Packet flag: {}  {}'.format(
                             response.flag, CORRECT))
-                        return SWITCH
+                        client = bytes_tuple(response.payload)
+                        return SWITCH, client
                     except TimeoutError:
                         if (self.keep_alive_retries == 10):
                             self.keep_alive_on = False
@@ -202,13 +215,13 @@ class Client:
                             self.keep_alive_thread.join()
                             print(
                                 'Response not received 10 times, closing connection')
-                            return CLOSE_CONNECTION
+                            return CLOSE_CONNECTION, ''
                         self.keep_alive_retries += 1
                         time.sleep(5)
 
             elif sending_method == "4":
                 self.send_data(flag=FIN)
-                return 'End'
+                return 'End', ''
 
     def keep_alive(self):
         while self.not_terminated:
@@ -318,7 +331,7 @@ class Server:
                 packet, self.client = recieve_packet(self.sock)
 
                 if packet.flag == ROLE_SWITCH:
-                    self.send_message(CORRECT)
+                    self.send_message(CORRECT, data=tuple_bytes(self.client))
                     time.sleep(5)
                     return SWITCH
 
@@ -413,10 +426,10 @@ class Server:
         packet = ''
         if type(fragment_size) == bytes:
             packet = bytes([flag, *fragment_size,
-                            *fragment_number, *data])
+                            *fragment_number, *data, *int(0).to_bytes(4)])
         else:
             packet = bytes([flag, *fragment_size.to_bytes(2),
-                            *fragment_number.to_bytes(3), *data])
+                            *fragment_number.to_bytes(3), *data, *int(0).to_bytes(4)])
 
         self.sock.sendto(packet, self.client)
 
@@ -431,6 +444,7 @@ if __name__ == "__main__":
     server_ip = ''
     server_port = ''
     returned_state = ''
+    address = ''
 
     # Landing menu, device choice
     while (True):
@@ -457,6 +471,10 @@ if __name__ == "__main__":
 
         # Initialize, what device we are using
         if returned_state == SWITCH:
+            # Get new connection details
+            server_ip = address[0]
+            server_port = address[1]
+
             if device_type == 'server':
                 device_type = 'client'
             else:
@@ -468,8 +486,9 @@ if __name__ == "__main__":
                 save_path = save_path + "/"
             server = Server(server_ip, int(server_port), save_path)
             returned_state = server.serverUp()
+            address = (server.client[0], str(server.client[1]))
             server.quit()
         else:
             client = Client(server_ip, int(server_port))
-            returned_state = client.clientUp()
+            returned_state, address = client.clientUp()
             client.quit()
