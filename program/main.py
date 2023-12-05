@@ -116,7 +116,7 @@ def handle_inputs():
                 continue
         file_data = file.read()
         file.close()
-        file_name = bytes(file_path.split('/')[-1], encoding='utf-8')
+        file_name = bytes(file_path.split("\\")[-1], encoding='utf-8')
         fragments = {}
         fragments['path'] = to_fragments(file_name, fragment_size)
         fragments['file'] = to_fragments(file_data, fragment_size)
@@ -141,8 +141,8 @@ class Client:
     def clientUp(self):
         data = None
         # [i] Initializing connection with server
-        print(f'[i] Initializing connection with server {
-              ':'.join([server_ip, str(server_port)])}')
+        print(f"[i] Initializing connection with server {
+              ':'.join([server_ip, str(server_port)])}")
 
         connection_established = False
         while not connection_established:
