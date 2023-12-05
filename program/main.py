@@ -154,7 +154,7 @@ class Client:
                 if (packet.flag == SYN):
                     print('[i] Connection established')
                     connection_established = True
-            except (TimeoutError, ConnectionResetError) as e:
+            except (TimeoutError, ConnectionResetError, OSError) as e:
                 if self.connection_retries == 10:
                     return CONNECTION_ERROR, ''
                 self.connection_retries += 1
@@ -208,7 +208,7 @@ class Client:
                             response.flag, CORRECT))
                         client = bytes_tuple(response.payload)
                         return SWITCH, client
-                    except TimeoutError:
+                    except (TimeoutError, ConnectionError, OSError) as e:
                         if (self.keep_alive_retries == 10):
                             self.keep_alive_on = False
                             self.not_terminated = False
@@ -232,7 +232,7 @@ class Client:
                     response = Packet(data)
                     self.keep_alive_retries = 0
                     time.sleep(5)
-                except (TimeoutError, ConnectionResetError) as e:
+                except (TimeoutError, ConnectionResetError, OSError) as e:
 
                     if (self.keep_alive_retries == 5):
                         self.keep_alive_on = False
