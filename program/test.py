@@ -1,21 +1,14 @@
-import ast
+message = 'Hello world testing message'
+sending_message = ''
+for i in range(0, len(message), 2):
+    fliped_pair = message[i:i+2][::-1] + ' '
+    if len(fliped_pair) > 2:
+        sending_message = ''.join([sending_message, fliped_pair])
 
-# Example string
-string_example = "('123.123.123.1', 60005)"
-test = ("123.123.123.1", 60005)
+print(sending_message)
 
+counter = 0
+for i in range(0, len(sending_message), 3):
+    counter += 1
 
-def tuple_bytes(address):
-    values = ', '.join(str(item) for item in address)
-    tuple_string = bytes(''.join(('(', values, ')')), encoding='utf-8')
-    return tuple_string
-
-
-def bytes_tuple(data):
-    string_tuple = str(data, encoding='utf-8').replace('(',
-                                                       '').replace(')', '').replace(' ', '').split(',')
-    return string_tuple
-
-
-eexample = bytes_tuple(tuple_bytes(test))
-print(eexample[1])
+print(counter)
